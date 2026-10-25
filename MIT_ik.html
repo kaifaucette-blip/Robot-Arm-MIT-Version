@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Robot IK Solver</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #f4f6f9; color: #333; max-width: 900px; margin: 20px auto; padding: 20px; }
+    h1 { text-align: center; font-size: 24px; margin-bottom: 20px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .card h3 { margin-top: 0; font-size: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px; }
+    .row { display: grid; grid-template-columns: repeat(4, 1fr; gap: 8px; margin-bottom: 8px; }
+    label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 4px; color: #555; }
+    input, select { width: 100%; padding: 6px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+    .actions { margin-top: 15px; display: flex; gap: 10px; }
+    button { padding: 8px 14px; background: #0066cc; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+    button:hover { background: #004f9e; }
+    button.send { background: #00897b; }
+    button.send:hover { background: #00695c; }
+    pre { background: #eaeef2; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 13px; min-height: 120px; }
+  </style>
+</head>
+<body>
+
+  <h1>Robot Inverse Kinematics</h1>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h3>Joint Geometry</h3>
+        <div id="jointsContainer"></div>
+      </div>
+
+      <div class="card">
+        <h3>Solver Config</h3>
+        <div class="row">
+          <div><label>Min Rad</label><input id="minAngle" type="number" value="-3.14" step="0.1"></div>
+          <div><label>Max Rad</label><input id="maxAngle" type="number" value="3.14" step="0.1"></div>
+          <div><label>Damping</label><input id="damping" type="number" value="0.08" step="0.01"></div>
+          <div><label>Max Iter</label><input id="maxIter" type="number" value="80"></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h3>Target Position & Speed</h3>
+        <div class="row">
+          <div><label>X</label><input id="targetX" type="number" value="150" step="1"></div>
+          <div><label>Y</label><input id="targetY" type="number" value="80" step="1"></div>
+          <div><label>Z</label><input id="targetZ" type="number" value="0" step="1"></div>
+          <div>
+            <label>Speed</label>
+            <select id="speedLevel">
+              <option value="1">1</option><option value="2">2</option>
+              <option value="3" selected>3</option><option value="4">4</option><option value="5">5</option>
+            </select>
+          </div>
+        </div>
+
+        <label style="margin-top: 12px;">Initial Guess (deg)</label>
+        <input id="initialGuess" type="text" value="0,0,0,0,0,0">
+
+        <div class="actions">
+          <button id="solveBtn">Solve IK</button>
+          <button id="sendBtn" class="send">Solve & Send</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Output Log</h3>
+        <pre id="output">Ready...</pre>
+      </div>
+    </div>
+  </div>
+
+  <script src="robot_ik.js"></script>
+  <script>
+    // Default joint configurations matching your hardware
+    const defaultJoints = [
+      { x: 0, y: 0, z: 0, axis: 'z' },
+      { x: 0, y: 0, z: 100, axis: 'y' },
+      { x: 0, y: 0, z: 120, axis: 'y' },
+      { x: 0, y: 0, z: 90, axis: 'x' },
+      { x: 0, y: 0, z: 60, axis: 'y' },
+      { x: 0, y: 0, z: 20, axis: 'z' },
+    ];
+
+    // Render joint inputs dynamically instead of hardcoding 6 blocks
+    const container = document.getElementById('jointsContainer');
+    defaultJoints.forEach((j, i) => {
+      const idx = i + 1;
+      const div = document.createElement('div');
+      div.className = 'row';
+      div.style.marginBottom = '6px';
+      div.innerHTML = `
+        <div><label>J${idx} X</label><input id="j${idx}x" type="number" value="${j.x}" step="0.1"></div>
+        <div><label>J${idx} Y</label><input id="j${idx}y" type="number" value="${j.y}" step="0.1"></div>
+        <div><label>J${idx} Z</label><input id="j${idx}z" type="number" value="${j.z}" step="0.1"></div>
+        <div>
+          <label>Axis</label>
+          <select id="j${idx}axis">
+            <option value="x" ${j.axis==='x'?'selected':''}>X</option>
+            <option value="y" ${j.axis==='y'?'selected':''}>Y</option>
+            <option value="z" ${j.axis==='z'?'selected':''}>Z</option>
+          </select>
+        </div>
+      `;
+      container.appendChild(div);
+    });
+
+    function readRobot() {
+      const joints = [];
+      for (let i = 1; i <= 6; i++) {
+        joints.push({
+          x: Number(document.getElementById(`j${i}x`).value),
+          y: Number(document.getElementById(`j${i}y`).value),
+          z: Number(document.getElementById(`j${i}z`).value),
+          axis: document.getElementById(`j${i}axis`).value
+        });
+      }
+      return RobotIK.createRobotFromConfig({
+        joints,
+        minAngles: Array(6).fill(Number(document.getElementById('minAngle').value)),
+        maxAngles: Array(6).fill(Number(document.getElementById('maxAngle').value)),
+        defaultQ: document.getElementById('initialGuess').value.split(',').map(v => Number(v.trim()) * Math.PI / 180)
+      });
+    }
+
+    function runIK() {
+      const robot = readRobot();
+      const target = {
+        x: Number(document.getElementById('targetX').value),
+        y: Number(document.getElementById('targetY').value),
+        z: Number(document.getElementById('targetZ').value)
+      };
+
+      const solution = RobotIK.solveJacobianIK(robot, target, robot.defaultQ, {
+        maxIter: Number(document.getElementById('maxIter').value),
+        tolerance: Number(document.getElementById('tolerance').value),
+        damping: Number(document.getElementById('damping').value)
+      });
+
+      const actual = RobotIK.forwardKinematics(robot, solution);
+      const degs = solution.map(r => (r * 180 / Math.PI).toFixed(2));
+
+      document.getElementById('output').textContent = 
+        `Joint Angles (deg):\n${degs.join(', ')}\n\n` +
+        `Target: [${target.x}, ${target.y}, ${target.z}]\n` +
+        `Actual: [${actual.x.toFixed(1)}, ${actual.y.toFixed(1)}, ${actual.z.toFixed(1)}]`;
+
+      return solution;
+    }
+
+    document.getElementById('solveBtn').addEventListener('click', () => {
+      try { runIK(); } catch (e) { document.getElementById('output').textContent = 'Error: ' + e.message; }
+    });
+
+    document.getElementById('sendBtn').addEventListener('click', async () => {
+      try {
+        const sol = runIK();
+        const anglesDeg = sol.map(r => r * 180 / Math.PI);
+        const speedLevel = Number(document.getElementById('speedLevel').value);
+
+        const res = await fetch('http://localhost:3000/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ angles: anglesDeg, speedLevel })
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+        document.getElementById('output').textContent += '\n\nSent to robot successfully!';
+      } catch (e) {
+        document.getElementById('output').textContent += '\n\nFailed to send: ' + e.message;
+      }
+    });
+  </script>
+</body>
+</html>
